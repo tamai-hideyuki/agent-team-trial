@@ -42,10 +42,19 @@ class GetStorageDirTest(StorageTestCase):
         os.environ["TODO_HOME"] = self.tmpdir
         self.assertEqual(storage.get_storage_dir(), os.path.abspath(self.tmpdir))
 
-    def test_falls_back_to_home_todo_when_env_not_set(self):
+    def test_falls_back_to_repo_todo_data_dir_when_env_not_set(self):
         if "TODO_HOME" in os.environ:
             del os.environ["TODO_HOME"]
-        self.assertEqual(storage.get_storage_dir(), os.path.expanduser("~/.todo"))
+        repo_root = os.path.dirname(
+            os.path.dirname(os.path.abspath(storage.__file__))
+        )
+        expected = os.path.join(repo_root, ".todo-data")
+        self.assertEqual(storage.get_storage_dir(), expected)
+
+    def test_does_not_use_home_todo_when_env_not_set(self):
+        if "TODO_HOME" in os.environ:
+            del os.environ["TODO_HOME"]
+        self.assertNotEqual(storage.get_storage_dir(), os.path.expanduser("~/.todo"))
 
 
 class LoadSaveTest(StorageTestCase):

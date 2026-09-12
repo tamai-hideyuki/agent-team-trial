@@ -79,16 +79,27 @@ class ConflictingOptionsError(StorageError):
         )
 
 
+def _default_storage_dir():
+    """既定の保存先ディレクトリ(リポジトリ直下の .todo-data/)を返す。
+
+    試作段階のためホームディレクトリ(~/.todo)には保存しない。
+    実行時のカレントディレクトリに左右されないよう、本ファイル(__file__)の
+    位置からリポジトリルート(todo/ の親ディレクトリ)を求めて解決する。
+    """
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(repo_root, ".todo-data")
+
+
 def get_storage_dir():
     """保存先ディレクトリを返す。
 
     環境変数 TODO_HOME が設定されていればそれを使い、
-    なければ ~/.todo を使う。
+    なければリポジトリ直下の .todo-data/ を使う(~/.todo は使わない)。
     """
     todo_home = os.environ.get("TODO_HOME")
     if todo_home:
         return os.path.abspath(os.path.expanduser(todo_home))
-    return os.path.expanduser("~/.todo")
+    return _default_storage_dir()
 
 
 def _paths(storage_dir):

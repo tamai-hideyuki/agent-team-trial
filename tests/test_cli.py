@@ -212,7 +212,20 @@ class AddWithOptionsTest(CliTestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(
             result.stdout.strip(),
-            "エラー: 期限の形式が不正です(YYYY-MM-DD形式で指定してください)",
+            "エラー: 期限の形式が不正です(YYYY-MM-DD または YYYY-MM-DD HH:MM形式で指定してください)",
+        )
+
+    def test_add_with_due_time_shows_time_in_annotation(self):
+        result = self.run_cli("add", "見積書提出", "--due", "2026-09-01 18:00")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("(期限: 2026-09-01 18:00, 期限切れ)", result.stdout)
+
+    def test_add_invalid_due_time_errors(self):
+        result = self.run_cli("add", "期限テスト2", "--due", "2026-09-20 24:00")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stdout.strip(),
+            "エラー: 期限の形式が不正です(YYYY-MM-DD または YYYY-MM-DD HH:MM形式で指定してください)",
         )
 
     def test_add_invalid_priority_errors(self):
@@ -344,6 +357,52 @@ class ListWithOptionsTest(CliTestCase):
         self.run_cli("add", "資料を作る", "--due", "2000-01-01")
         result = self.run_cli("list")
         self.assertIn("期限切れ", result.stdout)
+
+    def test_default_list_groups_overdue_items_first(self):
+        self.run_cli("add", "牛乳を買う")
+        self.run_cli("add", "資料を作る")
+        self.run_cli("add", "見積書提出", "--due", "2000-01-01")
+        result = self.run_cli("list")
+        lines = result.stdout.strip().splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(lines[0].startswith("#3"))
+        self.assertIn("期限切れ", lines[0])
+        self.assertTrue(lines[1].startswith("#1"))
+        self.assertTrue(lines[2].startswith("#2"))
+
+    def test_explicit_sort_due_bypasses_overdue_grouping(self):
+        self.run_cli("add", "牛乳を買う")
+        self.run_cli("add", "見積書提出", "--due", "2000-01-01")
+        self.run_cli("add", "来週の会議準備", "--due", "2099-01-01")
+        result = self.run_cli("list", "--sort", "due")
+        lines = result.stdout.strip().splitlines()
+        self.assertEqual(
+            [line.split(" ", 1)[0] for line in lines],
+            ["#2", "#3", "#1"],
+        )
+
+    def test_completed_overdue_item_not_grouped_first(self):
+        self.run_cli("add", "見積書提出", "--due", "2000-01-01")
+        self.run_cli("add", "牛乳を買う")
+        self.run_cli("done", "1")
+        result = self.run_cli("list", "--all")
+        lines = result.stdout.strip().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith("#1"))
+        self.assertTrue(lines[1].startswith("#2"))
+
+    def test_default_list_unchanged_when_no_overdue_items(self):
+        self.run_cli("add", "牛乳を買う")
+        self.run_cli("add", "資料を作る", "--due", "2099-01-01")
+        result = self.run_cli("list")
+        lines = result.stdout.strip().splitlines()
+        self.assertTrue(lines[0].startswith("#1"))
+        self.assertTrue(lines[1].startswith("#2"))
+
+    def test_due_before_matches_time_suffixed_due_by_date_part(self):
+        self.run_cli("add", "見積書提出", "--due", "2026-09-01 18:00")
+        result = self.run_cli("list", "--all", "--due-before", "2026-09-01")
+        self.assertIn("見積書提出", result.stdout)
 
 
 class ServeParserTest(unittest.TestCase):

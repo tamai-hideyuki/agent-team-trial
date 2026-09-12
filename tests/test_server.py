@@ -12,8 +12,9 @@ import shutil
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
-from todo import server
+from todo import server, storage
 
 
 CSRF_META_RE = re.compile(r'<meta name="todo-csrf-token" content="([^"]*)">')
@@ -172,7 +173,9 @@ class TodoApiTest(ServerTestCase):
         self.assertEqual(resp.status, 400)
         body = self.json_body(raw)
         self.assertEqual(
-            body["error"], "エラー: 期限の形式が不正です(YYYY-MM-DD形式で指定してください)"
+            body["error"],
+            "エラー: 期限の形式が不正です"
+            "(YYYY-MM-DD または YYYY-MM-DD HH:MM形式で指定してください)",
         )
 
     def test_add_invalid_priority_returns_400(self):
@@ -286,6 +289,113 @@ class TodoApiTest(ServerTestCase):
         self.assertEqual(resp.status, 500)
         body = self.json_body(raw)
         self.assertIn("エラー: データファイルが壊れています", body["error"])
+
+
+class OverdueGroupingTest(ServerTestCase):
+    """DESIGN.md 5.13節(期限切れ優先グルーピング)・8.2節(sort=overdue)対応。"""
+
+    def setUp(self):
+        super().setUp()
+        self._today_patcher = mock.patch.object(
+            storage, "today", lambda: "2026-09-12"
+        )
+        self._now_patcher = mock.patch.object(
+            storage, "now", lambda: "2026-09-12T10:00:00+09:00"
+        )
+        self._today_patcher.start()
+        self._now_patcher.start()
+
+    def tearDown(self):
+        self._now_patcher.stop()
+        self._today_patcher.stop()
+        super().tearDown()
+
+    def add(self, **kwargs):
+        resp, raw = self.request_with_token("POST", "/api/todos", body=kwargs)
+        self.assertEqual(resp.status, 201, raw)
+        return self.json_body(raw)
+
+    def build_items(self):
+        future = self.add(text="future", due="2026-12-01")
+        overdue_date = self.add(text="overdue-date", due="2026-09-01")
+        overdue_time_early = self.add(
+            text="overdue-time-early", due="2026-09-12 09:00"
+        )
+        overdue_time_late = self.add(
+            text="overdue-time-late", due="2026-09-12 11:00"
+        )
+        done_overdue = self.add(text="done-overdue", due="2026-08-01")
+        resp, raw = self.request_with_token(
+            "PATCH",
+            "/api/todos/{}".format(done_overdue["id"]),
+            body={"done": True},
+        )
+        self.assertEqual(resp.status, 200)
+        return future, overdue_date, overdue_time_early, overdue_time_late, done_overdue
+
+    def test_default_sort_groups_undone_overdue_first(self):
+        future, overdue_date, overdue_time_early, overdue_time_late, done_overdue = (
+            self.build_items()
+        )
+
+        resp, raw = self.request("GET", "/api/todos")
+        self.assertEqual(resp.status, 200)
+        items = self.json_body(raw)
+        ids = [item["id"] for item in items]
+        self.assertEqual(
+            ids,
+            [
+                overdue_date["id"],
+                overdue_time_early["id"],
+                future["id"],
+                overdue_time_late["id"],
+                done_overdue["id"],
+            ],
+        )
+
+    def test_sort_overdue_matches_default(self):
+        self.build_items()
+
+        resp_default, raw_default = self.request("GET", "/api/todos")
+        resp_overdue, raw_overdue = self.request("GET", "/api/todos?sort=overdue")
+        self.assertEqual(resp_default.status, 200)
+        self.assertEqual(resp_overdue.status, 200)
+        self.assertEqual(
+            [i["id"] for i in self.json_body(raw_default)],
+            [i["id"] for i in self.json_body(raw_overdue)],
+        )
+
+    def test_sort_due_bypasses_overdue_grouping(self):
+        future, overdue_date, overdue_time_early, overdue_time_late, done_overdue = (
+            self.build_items()
+        )
+
+        resp, raw = self.request("GET", "/api/todos?sort=due")
+        self.assertEqual(resp.status, 200)
+        ids = [item["id"] for item in self.json_body(raw)]
+        self.assertEqual(
+            ids,
+            [
+                done_overdue["id"],
+                overdue_date["id"],
+                overdue_time_early["id"],
+                overdue_time_late["id"],
+                future["id"],
+            ],
+        )
+
+    def test_overdue_field_reflects_is_overdue_regardless_of_done(self):
+        future, overdue_date, overdue_time_early, overdue_time_late, done_overdue = (
+            self.build_items()
+        )
+
+        resp, raw = self.request("GET", "/api/todos")
+        by_id = {item["id"]: item for item in self.json_body(raw)}
+        self.assertFalse(by_id[future["id"]]["overdue"])
+        self.assertTrue(by_id[overdue_date["id"]]["overdue"])
+        self.assertTrue(by_id[overdue_time_early["id"]]["overdue"])
+        self.assertFalse(by_id[overdue_time_late["id"]]["overdue"])
+        self.assertTrue(by_id[done_overdue["id"]]["overdue"])
 
 
 class ConcurrencyTest(ServerTestCase):

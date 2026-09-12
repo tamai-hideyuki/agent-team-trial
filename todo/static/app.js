@@ -51,9 +51,29 @@
     if (filterSearch.value) params.set("search", filterSearch.value);
     if (filterStatus.value) params.set("status", filterStatus.value);
     if (filterTag.value) params.set("tag", filterTag.value);
-    if (filterSort.value) params.set("sort", filterSort.value);
+    // 既定(未選択)の場合もAPIへ明示的にsort=overdueを送る(8.1節・8.2節)。
+    params.set("sort", filterSort.value || "overdue");
     var query = params.toString();
     return query ? "/api/todos?" + query : "/api/todos";
+  }
+
+  function combineDue(dateValue, timeValue) {
+    // 日付が空なら時刻のみの入力は無視してdueなし扱いにする。
+    if (!dateValue) return null;
+    if (!timeValue) return dateValue;
+    return dateValue + " " + timeValue;
+  }
+
+  function splitDue(due) {
+    if (!due) return { date: "", time: "" };
+    var spaceIndex = due.indexOf(" ");
+    if (spaceIndex === -1) return { date: due, time: "" };
+    return { date: due.slice(0, spaceIndex), time: due.slice(spaceIndex + 1) };
+  }
+
+  function formatDue(item) {
+    if (!item.due) return "";
+    return item.overdue ? item.due + " (期限切れ)" : item.due;
   }
 
   function parseTags(text) {
@@ -101,7 +121,7 @@
     tr.appendChild(textTd);
 
     var dueTd = document.createElement("td");
-    dueTd.textContent = item.due || "";
+    dueTd.textContent = formatDue(item);
     tr.appendChild(dueTd);
 
     var priorityTd = document.createElement("td");
@@ -157,11 +177,16 @@
     textTd.appendChild(textInput);
     tr.appendChild(textTd);
 
+    var dueParts = splitDue(item.due);
     var dueTd = document.createElement("td");
-    var dueInput = document.createElement("input");
-    dueInput.type = "date";
-    dueInput.value = item.due || "";
-    dueTd.appendChild(dueInput);
+    var dueDateInput = document.createElement("input");
+    dueDateInput.type = "date";
+    dueDateInput.value = dueParts.date;
+    var dueTimeInput = document.createElement("input");
+    dueTimeInput.type = "time";
+    dueTimeInput.value = dueParts.time;
+    dueTd.appendChild(dueDateInput);
+    dueTd.appendChild(dueTimeInput);
     tr.appendChild(dueTd);
 
     var priorityTd = document.createElement("td");
@@ -195,7 +220,7 @@
     saveBtn.addEventListener("click", function () {
       var body = {
         text: textInput.value,
-        due: dueInput.value === "" ? null : dueInput.value,
+        due: combineDue(dueDateInput.value, dueTimeInput.value),
         priority: prioritySelect.value === "" ? null : prioritySelect.value,
         tags: parseTags(tagsInput.value),
       };
@@ -238,13 +263,14 @@
   addForm.addEventListener("submit", function (event) {
     event.preventDefault();
     var textInput = document.getElementById("add-text");
-    var dueInput = document.getElementById("add-due");
+    var dueDateInput = document.getElementById("add-due-date");
+    var dueTimeInput = document.getElementById("add-due-time");
     var priorityInput = document.getElementById("add-priority");
     var tagsInput = document.getElementById("add-tags");
 
     var body = {
       text: textInput.value,
-      due: dueInput.value === "" ? null : dueInput.value,
+      due: combineDue(dueDateInput.value, dueTimeInput.value),
       priority: priorityInput.value === "" ? null : priorityInput.value,
       tags: parseTags(tagsInput.value),
     };
@@ -253,7 +279,8 @@
       .then(function () {
         clearError();
         textInput.value = "";
-        dueInput.value = "";
+        dueDateInput.value = "";
+        dueTimeInput.value = "";
         priorityInput.value = "";
         tagsInput.value = "";
         refresh();

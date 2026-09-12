@@ -21,7 +21,7 @@
   </select>
   <input type="text" id="filter-tag" placeholder="タグで絞り込み">
   <select id="filter-sort">
-    <option value="">並び替えなし</option>
+    <option value="">既定(期限切れを優先表示)</option>
     <option value="due">期限順</option>
     <option value="priority">優先度順</option>
   </select>
@@ -29,7 +29,8 @@
 
 <form id="add-form" class="add-form">
   <input type="text" id="add-text" placeholder="新しいTODO" required>
-  <input type="date" id="add-due">
+  <input type="date" id="add-due-date">
+  <input type="time" id="add-due-time">
   <select id="add-priority">
     <option value="">(未設定)</option>
     <option value="high">high</option>

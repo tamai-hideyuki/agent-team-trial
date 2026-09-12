@@ -29,7 +29,7 @@ def _format_annotations(item, show_completed_at):
     due = item.get("due")
     if due:
         parts.append("期限: {}".format(due))
-        if due < storage.today():
+        if storage.is_overdue(item):
             parts.append("期限切れ")
 
     priority = item.get("priority")

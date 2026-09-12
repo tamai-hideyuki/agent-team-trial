@@ -42,7 +42,11 @@ _CONTENT_TYPES = {
 def _item_to_json(item):
     # item は storage 層で読み込んだ dict をそのまま保持している
     # (ラウンドトリップ安全性、DESIGN.md 3章)ため、そのままシリアライズしてよい。
-    return dict(item)
+    # "overdue" はブラウザ画面(8.1節)の「(期限切れ)」表示のための計算済みフィールド
+    # (storage.is_overdue()と同じ判定をクライアント側で再計算させない、5.9節参照)。
+    result = dict(item)
+    result["overdue"] = storage.is_overdue(item)
+    return result
 
 
 def _run_with_write_lock(server, func, *args, **kwargs):

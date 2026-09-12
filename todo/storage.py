@@ -8,6 +8,7 @@ due/priority/tags を含むバリデーション、一覧の並び替え・検�
 
 import json
 import os
+import re
 import time
 import unicodedata
 from datetime import datetime, timezone
@@ -50,10 +51,13 @@ class InvalidTextError(StorageError):
 
 
 class InvalidDueError(StorageError):
-    """期限の形式が YYYY-MM-DD として不正な場合に送出する。"""
+    """期限の形式が YYYY-MM-DD / YYYY-MM-DD HH:MM として不正な場合に送出する。"""
 
     def __init__(self):
-        super().__init__("エラー: 期限の形式が不正です(YYYY-MM-DD形式で指定してください)")
+        super().__init__(
+            "エラー: 期限の形式が不正です"
+            "(YYYY-MM-DD または YYYY-MM-DD HH:MM形式で指定してください)"
+        )
 
 
 class InvalidPriorityError(StorageError):
@@ -309,13 +313,53 @@ def _next_item_id(data):
     return max(data.get("next_id", 1), max_existing + 1)
 
 
+_DUE_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_DUE_DATE_TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
+
+
 def validate_due(due_str):
-    """due の形式("YYYY-MM-DD")を検証し、そのまま返す。不正なら InvalidDueError。"""
+    """due の形式("YYYY-MM-DD" または "YYYY-MM-DD HH:MM")を検証し、そのまま返す。
+
+    ゼロ埋め2桁で厳密にこの2形式のいずれかに一致し、かつ実在の日付・時刻
+    (24:00等を含む)である場合のみ受理する。不正なら InvalidDueError。
+    """
+    if not isinstance(due_str, str):
+        raise InvalidDueError()
+    if _DUE_DATE_ONLY_RE.match(due_str):
+        fmt = "%Y-%m-%d"
+    elif _DUE_DATE_TIME_RE.match(due_str):
+        fmt = "%Y-%m-%d %H:%M"
+    else:
+        raise InvalidDueError()
     try:
-        datetime.strptime(due_str, "%Y-%m-%d")
-    except (ValueError, TypeError):
+        datetime.strptime(due_str, fmt)
+    except ValueError:
         raise InvalidDueError()
     return due_str
+
+
+def _has_time(due_str):
+    return " " in due_str
+
+
+def _now_as_minute_str():
+    iso = now()
+    return iso[:10] + " " + iso[11:16]
+
+
+def is_overdue(item):
+    """item の due が期限切れかどうかを判定する(5.9節)。
+
+    due が日付のみの場合は today() > due(期限日の翌日から期限切れ)、
+    日付+時刻の場合は現在日時が due を過ぎた瞬間から期限切れとする。
+    done(完了)かどうかはここでは考慮しない(呼び出し側の責務)。
+    """
+    due = item.get("due")
+    if due is None:
+        return False
+    if _has_time(due):
+        return _now_as_minute_str() > due
+    return today() > due
 
 
 def validate_priority(priority_str):
@@ -416,7 +460,10 @@ def list_items(include_done=True, storage_dir=None, sort=None, search=None,
     search: text(本文)に対する大文字小文字・全角半角を区別しない部分一致(NFKC正規化)。
     tag: 文字列、または文字列のリスト。複数指定時はOR条件。
     due_before/due_after: "YYYY-MM-DD"。境界値を含む(閉区間)。両方指定時はAND条件。
-    sort: "due" または "priority"。安定ソートで、値がnullの項目は末尾に配置する。
+    due が日付+時刻を持つ場合は日付部分(先頭10文字)のみで比較する。
+    sort: "due" または "priority" を指定すると、その値そのもの(nullは末尾)で単純ソートする。
+    それ以外(省略、None、"overdue")の場合は5.13節の「期限切れ優先グルーピング」を適用する
+    (未完了かつ期限切れの項目をdue昇順で先頭にまとめ、残りは現在のid昇順のまま続ける)。
     """
     if storage_dir is None:
         storage_dir = get_storage_dir()
@@ -447,21 +494,37 @@ def list_items(include_done=True, storage_dir=None, sort=None, search=None,
     if due_before:
         items = [
             item for item in items
-            if item.get("due") is not None and item["due"] <= due_before
+            if item.get("due") is not None and item["due"][:10] <= due_before
         ]
 
     if due_after:
         items = [
             item for item in items
-            if item.get("due") is not None and item["due"] >= due_after
+            if item.get("due") is not None and item["due"][:10] >= due_after
         ]
 
     if sort == "due":
         items = sorted(items, key=_due_sort_key)
     elif sort == "priority":
         items = sorted(items, key=_priority_sort_key)
+    else:
+        items = _apply_overdue_grouping(items)
 
     return items
+
+
+def _apply_overdue_grouping(items):
+    """5.13節の「期限切れ優先グルーピング」。未完了かつ期限切れの項目を先頭に
+    due昇順(安定ソート)で並べ、それ以外は現在のid昇順のまま続ける。"""
+    overdue_ids = set()
+    overdue = []
+    for item in items:
+        if not item["done"] and is_overdue(item):
+            overdue.append(item)
+            overdue_ids.add(item["id"])
+    overdue = sorted(overdue, key=lambda item: item["due"])
+    rest = [item for item in items if item["id"] not in overdue_ids]
+    return overdue + rest
 
 
 def _find_item(data, item_id):

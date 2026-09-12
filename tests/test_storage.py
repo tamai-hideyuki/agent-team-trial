@@ -317,7 +317,7 @@ class AddNewFieldsTest(StorageTestCase):
             storage.add("a", due="2026-13-01", storage_dir=self.tmpdir)
         self.assertEqual(
             str(ctx.exception),
-            "エラー: 期限の形式が不正です(YYYY-MM-DD形式で指定してください)",
+            "エラー: 期限の形式が不正です(YYYY-MM-DD または YYYY-MM-DD HH:MM形式で指定してください)",
         )
 
     def test_add_invalid_priority_raises(self):
@@ -534,6 +534,172 @@ class SortSearchFilterTest(StorageTestCase):
         self.assertEqual([i["text"] for i in before], ["a", "b"])
         self.assertEqual([i["text"] for i in after], ["b", "c"])
         self.assertEqual([i["text"] for i in both], ["b"])
+
+
+class DueWithTimeValidationTest(StorageTestCase):
+    def test_add_accepts_date_only(self):
+        item = storage.add("a", due="2026-09-20", storage_dir=self.tmpdir)
+        self.assertEqual(item["due"], "2026-09-20")
+
+    def test_add_accepts_date_and_time(self):
+        item = storage.add("a", due="2026-09-20 18:00", storage_dir=self.tmpdir)
+        self.assertEqual(item["due"], "2026-09-20 18:00")
+
+    def test_add_rejects_hour_24(self):
+        with self.assertRaises(storage.InvalidDueError):
+            storage.add("a", due="2026-09-20 24:00", storage_dir=self.tmpdir)
+
+    def test_add_rejects_seconds(self):
+        with self.assertRaises(storage.InvalidDueError):
+            storage.add("a", due="2026-09-20 18:00:00", storage_dir=self.tmpdir)
+
+    def test_add_rejects_timezone_suffix(self):
+        with self.assertRaises(storage.InvalidDueError):
+            storage.add("a", due="2026-09-20 18:00+09:00", storage_dir=self.tmpdir)
+
+    def test_add_rejects_single_digit_hour_minute(self):
+        with self.assertRaises(storage.InvalidDueError):
+            storage.add("a", due="2026-09-20 8:00", storage_dir=self.tmpdir)
+
+    def test_add_rejects_invalid_minute(self):
+        with self.assertRaises(storage.InvalidDueError):
+            storage.add("a", due="2026-09-20 12:60", storage_dir=self.tmpdir)
+
+    def test_error_message_mentions_both_formats(self):
+        with self.assertRaises(storage.InvalidDueError) as ctx:
+            storage.add("a", due="not-a-date", storage_dir=self.tmpdir)
+        self.assertEqual(
+            str(ctx.exception),
+            "エラー: 期限の形式が不正です(YYYY-MM-DD または YYYY-MM-DD HH:MM形式で指定してください)",
+        )
+
+
+class IsOverdueTest(StorageTestCase):
+    def setUp(self):
+        super().setUp()
+        self._orig_today = storage.today
+        self._orig_now = storage.now
+
+    def tearDown(self):
+        storage.today = self._orig_today
+        storage.now = self._orig_now
+        super().tearDown()
+
+    def test_date_only_not_overdue_on_due_day(self):
+        storage.today = lambda: "2026-09-20"
+        item = {"due": "2026-09-20"}
+        self.assertFalse(storage.is_overdue(item))
+
+    def test_date_only_overdue_on_day_after(self):
+        storage.today = lambda: "2026-09-21"
+        item = {"due": "2026-09-20"}
+        self.assertTrue(storage.is_overdue(item))
+
+    def test_date_only_with_no_due_is_not_overdue(self):
+        item = {"due": None}
+        self.assertFalse(storage.is_overdue(item))
+
+    def test_item_without_due_key_is_not_overdue(self):
+        self.assertFalse(storage.is_overdue({}))
+
+    def test_datetime_not_overdue_before_due_minute(self):
+        storage.now = lambda: "2026-09-20T17:59:00+09:00"
+        item = {"due": "2026-09-20 18:00"}
+        self.assertFalse(storage.is_overdue(item))
+
+    def test_datetime_not_overdue_at_exact_due_minute(self):
+        storage.now = lambda: "2026-09-20T18:00:00+09:00"
+        item = {"due": "2026-09-20 18:00"}
+        self.assertFalse(storage.is_overdue(item))
+
+    def test_datetime_overdue_one_minute_after(self):
+        storage.now = lambda: "2026-09-20T18:01:00+09:00"
+        item = {"due": "2026-09-20 18:00"}
+        self.assertTrue(storage.is_overdue(item))
+
+    def test_datetime_overdue_same_day_later_hour(self):
+        # 日付+時刻の場合は当日でも指定時刻を過ぎていれば期限切れになる
+        storage.now = lambda: "2026-09-20T20:00:00+09:00"
+        item = {"due": "2026-09-20 18:00"}
+        self.assertTrue(storage.is_overdue(item))
+
+    def test_is_overdue_ignores_done_status(self):
+        # done かどうかの考慮は呼び出し側(グルーピング)の責務
+        storage.today = lambda: "2026-09-21"
+        item = {"due": "2026-09-20", "done": True}
+        self.assertTrue(storage.is_overdue(item))
+
+
+class DueBeforeAfterWithTimeTest(StorageTestCase):
+    def test_due_before_matches_datetime_due_by_date_part_only(self):
+        storage.add("a", due="2026-09-01 18:00", storage_dir=self.tmpdir)
+        items = storage.list_items(storage_dir=self.tmpdir, due_before="2026-09-01")
+        self.assertEqual(len(items), 1)
+
+    def test_due_after_matches_datetime_due_by_date_part_only(self):
+        storage.add("a", due="2026-09-01 00:30", storage_dir=self.tmpdir)
+        items = storage.list_items(storage_dir=self.tmpdir, due_after="2026-09-01")
+        self.assertEqual(len(items), 1)
+
+
+class DefaultOverdueGroupingTest(StorageTestCase):
+    def setUp(self):
+        super().setUp()
+        self._orig_today = storage.today
+        self._orig_now = storage.now
+        storage.today = lambda: "2026-09-12"
+        storage.now = lambda: "2026-09-12T09:00:00+09:00"
+
+    def tearDown(self):
+        storage.today = self._orig_today
+        storage.now = self._orig_now
+        super().tearDown()
+
+    def test_overdue_pending_items_come_first_sorted_by_due(self):
+        storage.add("no-due", storage_dir=self.tmpdir)
+        storage.add("late-overdue", due="2026-09-05", storage_dir=self.tmpdir)
+        storage.add("future", due="2026-09-20", storage_dir=self.tmpdir)
+        storage.add("early-overdue", due="2026-09-01", storage_dir=self.tmpdir)
+        items = storage.list_items(storage_dir=self.tmpdir)
+        self.assertEqual(
+            [i["text"] for i in items],
+            ["early-overdue", "late-overdue", "no-due", "future"],
+        )
+
+    def test_done_items_are_excluded_from_overdue_group_even_if_shown(self):
+        storage.add("a", due="2026-09-01", storage_dir=self.tmpdir)
+        storage.add("b", storage_dir=self.tmpdir)
+        storage.done(1, storage_dir=self.tmpdir)
+        items = storage.list_items(storage_dir=self.tmpdir, status="all")
+        self.assertEqual([i["text"] for i in items], ["a", "b"])
+
+    def test_explicit_sort_due_disables_grouping(self):
+        storage.add("no-due", storage_dir=self.tmpdir)
+        storage.add("overdue", due="2026-09-01", storage_dir=self.tmpdir)
+        items = storage.list_items(storage_dir=self.tmpdir, sort="due")
+        self.assertEqual([i["text"] for i in items], ["overdue", "no-due"])
+
+    def test_explicit_sort_priority_disables_grouping(self):
+        storage.add("overdue-low", due="2026-09-01", priority="low", storage_dir=self.tmpdir)
+        storage.add("no-due-high", priority="high", storage_dir=self.tmpdir)
+        items = storage.list_items(storage_dir=self.tmpdir, sort="priority")
+        self.assertEqual([i["text"] for i in items], ["no-due-high", "overdue-low"])
+
+    def test_sort_overdue_explicit_value_behaves_like_default(self):
+        storage.add("no-due", storage_dir=self.tmpdir)
+        storage.add("overdue", due="2026-09-01", storage_dir=self.tmpdir)
+        default_items = storage.list_items(storage_dir=self.tmpdir)
+        explicit_items = storage.list_items(storage_dir=self.tmpdir, sort="overdue")
+        self.assertEqual(
+            [i["text"] for i in default_items], [i["text"] for i in explicit_items]
+        )
+
+    def test_no_overdue_items_keeps_id_order_unchanged(self):
+        storage.add("a", storage_dir=self.tmpdir)
+        storage.add("b", due="2026-09-20", storage_dir=self.tmpdir)
+        storage.add("c", storage_dir=self.tmpdir)
+        items = storage.list_items(storage_dir=self.tmpdir)
+        self.assertEqual([i["id"] for i in items], [1, 2, 3])
 
 
 if __name__ == "__main__":

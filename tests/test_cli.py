@@ -190,5 +190,209 @@ class DesignExampleScenarioTest(CliTestCase):
         self.assertEqual(r8.stdout.strip(), "TODOはありません")
 
 
+class AddWithOptionsTest(CliTestCase):
+    def test_add_with_due_priority_tag_shows_annotation(self):
+        result = self.run_cli(
+            "add", "資料を作る",
+            "--due", "2026-09-20", "--priority", "high",
+            "--tag", "仕事", "--tag", "至急",
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            result.stdout.strip(),
+            "追加しました: #1 資料を作る (期限: 2026-09-20, 優先度: high, タグ: 仕事, 至急)",
+        )
+
+    def test_add_without_options_has_no_annotation(self):
+        result = self.run_cli("add", "牛乳を買う")
+        self.assertEqual(result.stdout.strip(), "追加しました: #1 牛乳を買う")
+
+    def test_add_invalid_due_format_errors(self):
+        result = self.run_cli("add", "期限テスト", "--due", "2026-13-01")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stdout.strip(),
+            "エラー: 期限の形式が不正です(YYYY-MM-DD形式で指定してください)",
+        )
+
+    def test_add_invalid_priority_errors(self):
+        result = self.run_cli("add", "優先度テスト", "--priority", "urgent")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stdout.strip(),
+            "エラー: 優先度はhigh/medium/lowのいずれかで指定してください",
+        )
+
+    def test_add_priority_is_case_insensitive(self):
+        result = self.run_cli("add", "資料を作る", "--priority", "HIGH")
+        self.assertIn("優先度: high", result.stdout)
+
+
+class EditCommandTest(CliTestCase):
+    def test_edit_text_only(self):
+        self.run_cli("add", "牛乳を買う")
+        result = self.run_cli("edit", "1", "パンを買う")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), "編集しました: #1 パンを買う")
+        listing = self.run_cli("list")
+        self.assertEqual(listing.stdout.strip(), "#1 [ ] パンを買う")
+
+    def test_edit_option_only(self):
+        self.run_cli(
+            "add", "資料を作る",
+            "--due", "2026-09-20", "--priority", "high", "--tag", "仕事",
+        )
+        result = self.run_cli("edit", "1", "--priority", "medium")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), "編集しました: #1 資料を作る")
+        listing = self.run_cli("list")
+        self.assertIn("優先度: medium", listing.stdout)
+
+    def test_edit_tag_replaces_entire_set(self):
+        self.run_cli("add", "資料を作る", "--tag", "仕事", "--tag", "至急")
+        self.run_cli("edit", "1", "--tag", "仕事")
+        result = self.run_cli("list", "--tag", "至急")
+        self.assertEqual(result.stdout.strip(), "TODOはありません")
+
+    def test_edit_clear_due_priority_tags(self):
+        self.run_cli(
+            "add", "資料を作る",
+            "--due", "2026-09-20", "--priority", "high", "--tag", "仕事",
+        )
+        result = self.run_cli(
+            "edit", "1", "--clear-due", "--clear-priority", "--clear-tags",
+        )
+        self.assertEqual(result.returncode, 0)
+        listing = self.run_cli("list", "--all")
+        self.assertEqual(listing.stdout.strip(), "#1 [ ] 資料を作る")
+
+    def test_edit_missing_id_errors(self):
+        result = self.run_cli("edit", "99", "内容")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.strip(), "エラー: ID 99 は存在しません")
+
+    def test_edit_no_fields_specified_errors(self):
+        self.run_cli("add", "牛乳を買う")
+        result = self.run_cli("edit", "1")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.strip(), "エラー: 変更する項目を指定してください")
+
+    def test_edit_due_and_clear_due_conflict_errors(self):
+        self.run_cli("add", "資料を作る")
+        result = self.run_cli("edit", "1", "--due", "2026-09-25", "--clear-due")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stdout.strip(),
+            "エラー: --due と --clear-due は同時に指定できません",
+        )
+
+
+class UndoneCommandTest(CliTestCase):
+    def test_undone_prints_confirmation_and_exit_0(self):
+        self.run_cli("add", "牛乳を買う")
+        self.run_cli("done", "1")
+        result = self.run_cli("undone", "1")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), "未完了に戻しました: #1 牛乳を買う")
+        listing = self.run_cli("list")
+        self.assertEqual(listing.stdout.strip(), "#1 [ ] 牛乳を買う")
+
+    def test_undone_missing_id_errors(self):
+        result = self.run_cli("undone", "99")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.strip(), "エラー: ID 99 は存在しません")
+
+
+class ListWithOptionsTest(CliTestCase):
+    def test_sort_due_places_null_last(self):
+        self.run_cli("add", "資料を作る", "--due", "2026-09-20")
+        self.run_cli("add", "牛乳を買う")
+        result = self.run_cli("list", "--sort", "due")
+        lines = result.stdout.strip().splitlines()
+        self.assertTrue(lines[0].startswith("#1"))
+        self.assertTrue(lines[1].startswith("#2"))
+
+    def test_search_matches_text_case_and_width_insensitively(self):
+        self.run_cli("add", "資料を作る")
+        result = self.run_cli("list", "--search", "SIRYOU")
+        self.assertEqual(result.stdout.strip(), "TODOはありません")
+        result2 = self.run_cli("list", "--search", "資料")
+        self.assertIn("資料を作る", result2.stdout)
+
+    def test_status_all_matches_all_flag(self):
+        self.run_cli("add", "牛乳を買う")
+        self.run_cli("done", "1")
+        result_status = self.run_cli("list", "--status", "all")
+        result_all = self.run_cli("list", "--all")
+        self.assertEqual(result_status.stdout, result_all.stdout)
+
+    def test_tag_filter_is_or_condition(self):
+        self.run_cli("add", "資料を作る", "--tag", "仕事")
+        self.run_cli("add", "買い物", "--tag", "私用")
+        result = self.run_cli("list", "--tag", "仕事", "--tag", "私用")
+        lines = result.stdout.strip().splitlines()
+        self.assertEqual(len(lines), 2)
+
+    def test_due_before_and_due_after_are_inclusive(self):
+        self.run_cli("add", "資料を作る", "--due", "2026-09-20")
+        result_before = self.run_cli("list", "--due-before", "2026-09-20")
+        result_after = self.run_cli("list", "--due-after", "2026-09-20")
+        self.assertIn("資料を作る", result_before.stdout)
+        self.assertIn("資料を作る", result_after.stdout)
+
+    def test_overdue_item_shows_expired_marker(self):
+        self.run_cli("add", "資料を作る", "--due", "2000-01-01")
+        result = self.run_cli("list")
+        self.assertIn("期限切れ", result.stdout)
+
+
+class ServeParserTest(unittest.TestCase):
+    """serve サブコマンドはDESIGN.md 8.4節の run_server(host, port) にのみ依存する。
+
+    実サーバは起動せずパース結果のみを確認する(server.pyの完成を待たない)。
+    """
+
+    def test_serve_default_port(self):
+        from todo.cli import _build_parser
+
+        parser = _build_parser()
+        args = parser.parse_args(["serve"])
+        self.assertEqual(args.port, 8765)
+        self.assertEqual(args.func.__name__, "_cmd_serve")
+
+    def test_serve_custom_port(self):
+        from todo.cli import _build_parser
+
+        parser = _build_parser()
+        args = parser.parse_args(["serve", "--port", "9000"])
+        self.assertEqual(args.port, 9000)
+
+
+class ServeCommandTest(CliTestCase):
+    def test_serve_starts_and_prints_url_on_dynamic_port(self):
+        env = dict(os.environ)
+        env["TODO_HOME"] = self.tmpdir
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "todo", "serve", "--port", "0"],
+            cwd=PROJECT_ROOT,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            first_line = proc.stdout.readline()
+            self.assertRegex(first_line.strip(), r"^起動しました: http://127\.0\.0\.1:\d+$")
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+            proc.stdout.close()
+            proc.stderr.close()
+
+
 if __name__ == "__main__":
     unittest.main()

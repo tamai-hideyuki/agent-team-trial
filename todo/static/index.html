@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="todo-csrf-token" content="__CSRF_TOKEN__">
+<title>TODO</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>TODO</h1>
+
+<div id="error-banner" class="error-banner" hidden></div>
+
+<section class="filter-bar">
+  <input type="text" id="filter-search" placeholder="検索(本文)">
+  <select id="filter-status">
+    <option value="pending">未完了</option>
+    <option value="done">完了</option>
+    <option value="all">すべて</option>
+  </select>
+  <input type="text" id="filter-tag" placeholder="タグで絞り込み">
+  <select id="filter-sort">
+    <option value="">並び替えなし</option>
+    <option value="due">期限順</option>
+    <option value="priority">優先度順</option>
+  </select>
+</section>
+
+<form id="add-form" class="add-form">
+  <input type="text" id="add-text" placeholder="新しいTODO" required>
+  <input type="date" id="add-due">
+  <select id="add-priority">
+    <option value="">(未設定)</option>
+    <option value="high">high</option>
+    <option value="medium">medium</option>
+    <option value="low">low</option>
+  </select>
+  <input type="text" id="add-tags" placeholder="タグ(カンマ区切り)">
+  <button type="submit">追加</button>
+</form>
+
+<table class="todo-table">
+  <thead>
+    <tr>
+      <th></th>
+      <th>ID</th>
+      <th>内容</th>
+      <th>期限</th>
+      <th>優先度</th>
+      <th>タグ</th>
+      <th></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody id="todo-list"></tbody>
+</table>
+
+<script src="app.js"></script>
+</body>
+</html>

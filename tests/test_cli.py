@@ -66,7 +66,10 @@ class ListCommandTest(CliTestCase):
     def test_list_empty_shows_no_todos_message(self):
         result = self.run_cli("list")
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout.strip(), "TODOはありません")
+        self.assertEqual(
+            result.stdout.strip().splitlines(),
+            ["TODOはありません", 'todo add "内容" で追加できます'],
+        )
 
     def test_no_args_behaves_like_list(self):
         self.run_cli("add", "牛乳を買う")
@@ -78,7 +81,10 @@ class ListCommandTest(CliTestCase):
     def test_no_args_shows_no_todos_message_when_empty(self):
         result = self.run_cli()
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout.strip(), "TODOはありません")
+        self.assertEqual(
+            result.stdout.strip().splitlines(),
+            ["TODOはありません", 'todo add "内容" で追加できます'],
+        )
 
     def test_ls_alias_matches_list(self):
         self.run_cli("add", "牛乳を買う")
@@ -403,6 +409,159 @@ class ListWithOptionsTest(CliTestCase):
         self.run_cli("add", "見積書提出", "--due", "2026-09-01 18:00")
         result = self.run_cli("list", "--all", "--due-before", "2026-09-01")
         self.assertIn("見積書提出", result.stdout)
+
+
+class EditTagAnnotationTest(CliTestCase):
+    def test_edit_with_tag_appends_tag_list(self):
+        self.run_cli("add", "資料を作る")
+        result = self.run_cli("edit", "1", "--tag", "仕事", "--tag", "至急")
+        self.assertEqual(
+            result.stdout.strip(),
+            "編集しました: #1 資料を作る (タグ: 仕事, 至急)",
+        )
+
+    def test_edit_with_clear_tags_when_tags_remain_zero_omits_annotation(self):
+        self.run_cli("add", "資料を作る", "--tag", "仕事")
+        result = self.run_cli("edit", "1", "--clear-tags")
+        self.assertEqual(result.stdout.strip(), "編集しました: #1 資料を作る")
+
+    def test_edit_without_tag_options_has_no_annotation(self):
+        self.run_cli("add", "資料を作る", "--tag", "仕事")
+        result = self.run_cli("edit", "1", "--priority", "high")
+        self.assertEqual(result.stdout.strip(), "編集しました: #1 資料を作る")
+
+    def test_edit_clear_tags_and_new_tag_together_shows_new_set(self):
+        self.run_cli("add", "資料を作る", "--tag", "仕事")
+        result = self.run_cli("edit", "1", "--tag", "私用")
+        self.assertEqual(
+            result.stdout.strip(),
+            "編集しました: #1 資料を作る (タグ: 私用)",
+        )
+
+
+class FirstRunHintTest(CliTestCase):
+    def test_hint_shown_on_true_empty_storage(self):
+        result = self.run_cli("list")
+        self.assertEqual(
+            result.stdout.strip().splitlines(),
+            ["TODOはありません", 'todo add "内容" で追加できます'],
+        )
+
+    def test_no_args_shows_hint_on_true_empty_storage(self):
+        result = self.run_cli()
+        self.assertEqual(
+            result.stdout.strip().splitlines(),
+            ["TODOはありません", 'todo add "内容" で追加できます'],
+        )
+
+    def test_hint_not_shown_when_filter_yields_zero_results(self):
+        self.run_cli("add", "牛乳を買う")
+        result = self.run_cli("list", "--search", "存在しない語")
+        self.assertEqual(result.stdout.strip(), "TODOはありません")
+
+    def test_hint_not_shown_when_all_items_completed(self):
+        self.run_cli("add", "牛乳を買う")
+        self.run_cli("done", "1")
+        result = self.run_cli("list")
+        self.assertEqual(result.stdout.strip(), "TODOはありません")
+
+    def test_hint_not_shown_when_tag_filter_yields_zero_results(self):
+        self.run_cli("add", "牛乳を買う")
+        result = self.run_cli("list", "--tag", "存在しないタグ")
+        self.assertEqual(result.stdout.strip(), "TODOはありません")
+
+    def test_hint_not_shown_when_all_items_moved_to_trash(self):
+        # DESIGN.md 5.2節: ゴミ箱内項目を含めて items 配列自体に1件でも
+        # 残っていればヒントは出さない(ゴミ箱行きは「真の初回状態」ではない)。
+        self.run_cli("add", "牛乳を買う")
+        self.run_cli("add", "資料を作る")
+        self.run_cli("rm", "1")
+        self.run_cli("rm", "2")
+        result = self.run_cli("list")
+        self.assertEqual(result.stdout.strip(), "TODOはありません")
+
+    def test_hint_not_shown_when_undeleted_item_remains(self):
+        self.run_cli("add", "牛乳を買う")
+        self.run_cli("add", "資料を作る")
+        self.run_cli("done", "1")
+        self.run_cli("rm", "2")
+        result = self.run_cli("list")
+        self.assertEqual(result.stdout.strip(), "TODOはありません")
+
+
+class TrashCommandTest(CliTestCase):
+    def test_restore_prints_confirmation_and_reappears_in_list(self):
+        self.run_cli("add", "牛乳を買う")
+        self.run_cli("rm", "1")
+        result = self.run_cli("restore", "1")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), "復元しました: #1 牛乳を買う")
+        listing = self.run_cli("list")
+        self.assertEqual(listing.stdout.strip(), "#1 [ ] 牛乳を買う")
+
+    def test_restore_nonexistent_id_errors(self):
+        result = self.run_cli("restore", "99")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.strip(), "エラー: ID 99 は存在しません")
+
+    def test_restore_id_not_in_trash_errors(self):
+        self.run_cli("add", "牛乳を買う")
+        result = self.run_cli("restore", "1")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.strip(), "エラー: ID 1 はゴミ箱にありません")
+
+    def test_purge_prints_confirmation_and_id_is_gone(self):
+        self.run_cli("add", "牛乳を買う")
+        self.run_cli("rm", "1")
+        result = self.run_cli("purge", "1")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), "完全に削除しました: #1 牛乳を買う")
+        restore_result = self.run_cli("restore", "1")
+        self.assertEqual(restore_result.returncode, 1)
+        self.assertEqual(restore_result.stdout.strip(), "エラー: ID 1 は存在しません")
+
+    def test_purge_nonexistent_id_errors(self):
+        result = self.run_cli("purge", "99")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.strip(), "エラー: ID 99 は存在しません")
+
+    def test_purge_id_not_in_trash_errors(self):
+        self.run_cli("add", "牛乳を買う")
+        result = self.run_cli("purge", "1")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.strip(), "エラー: ID 1 はゴミ箱にありません")
+
+    def test_purge_all_empties_trash(self):
+        self.run_cli("add", "牛乳を買う")
+        self.run_cli("add", "資料を作る")
+        self.run_cli("rm", "1")
+        self.run_cli("rm", "2")
+        result = self.run_cli("purge", "--all")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), "ゴミ箱を空にしました(2件)")
+
+    def test_purge_all_with_empty_trash_shows_zero(self):
+        result = self.run_cli("purge", "--all")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), "ゴミ箱を空にしました(0件)")
+
+    def test_purge_requires_id_or_all(self):
+        result = self.run_cli("purge")
+        self.assertEqual(result.returncode, 2)
+
+    def test_purge_id_and_all_are_mutually_exclusive(self):
+        self.run_cli("add", "牛乳を買う")
+        self.run_cli("rm", "1")
+        result = self.run_cli("purge", "1", "--all")
+        self.assertEqual(result.returncode, 2)
+
+    def test_rm_then_list_and_list_all_never_show_removed_item(self):
+        self.run_cli("add", "牛乳を買う")
+        self.run_cli("add", "資料を作る")
+        self.run_cli("rm", "1")
+        self.assertEqual(self.run_cli("list").stdout.strip(), "#2 [ ] 資料を作る")
+        self.assertEqual(self.run_cli("list", "--all").stdout.strip(), "#2 [ ] 資料を作る")
+        self.assertNotIn("牛乳を買う", self.run_cli("list", "--status", "all").stdout)
 
 
 class ServeParserTest(unittest.TestCase):

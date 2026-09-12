@@ -384,7 +384,7 @@ class OverdueGroupingTest(ServerTestCase):
             ],
         )
 
-    def test_overdue_field_reflects_is_overdue_regardless_of_done(self):
+    def test_overdue_field_is_false_for_done_items_even_if_past_due(self):
         future, overdue_date, overdue_time_early, overdue_time_late, done_overdue = (
             self.build_items()
         )
@@ -395,7 +395,122 @@ class OverdueGroupingTest(ServerTestCase):
         self.assertTrue(by_id[overdue_date["id"]]["overdue"])
         self.assertTrue(by_id[overdue_time_early["id"]]["overdue"])
         self.assertFalse(by_id[overdue_time_late["id"]]["overdue"])
-        self.assertTrue(by_id[done_overdue["id"]]["overdue"])
+        self.assertFalse(by_id[done_overdue["id"]]["overdue"])
+
+
+class TrashApiTest(ServerTestCase):
+    def add(self, **kwargs):
+        resp, raw = self.request_with_token("POST", "/api/todos", body=kwargs)
+        self.assertEqual(resp.status, 201, raw)
+        return self.json_body(raw)
+
+    def remove(self, item_id):
+        resp, raw = self.request_with_token("DELETE", "/api/todos/{}".format(item_id))
+        self.assertEqual(resp.status, 200, raw)
+        return self.json_body(raw)
+
+    def test_restore_returns_updated_item(self):
+        item = self.add(text="牛乳を買う")
+        self.remove(item["id"])
+
+        resp, raw = self.request_with_token(
+            "POST", "/api/todos/{}/restore".format(item["id"])
+        )
+        self.assertEqual(resp.status, 200)
+        restored = self.json_body(raw)
+        self.assertEqual(restored["id"], item["id"])
+        self.assertIsNone(restored.get("deleted_at"))
+
+        resp, raw = self.request("GET", "/api/todos")
+        items = self.json_body(raw)
+        self.assertEqual([i["id"] for i in items], [item["id"]])
+
+    def test_purge_returns_item_before_deletion(self):
+        item = self.add(text="牛乳を買う")
+        self.remove(item["id"])
+
+        resp, raw = self.request_with_token(
+            "DELETE", "/api/todos/{}/purge".format(item["id"])
+        )
+        self.assertEqual(resp.status, 200)
+        purged = self.json_body(raw)
+        self.assertEqual(purged["id"], item["id"])
+
+        resp, raw = self.request_with_token(
+            "POST", "/api/todos/{}/restore".format(item["id"])
+        )
+        self.assertEqual(resp.status, 404)
+
+    def test_restore_nonexistent_id_returns_404(self):
+        resp, raw = self.request_with_token("POST", "/api/todos/999/restore")
+        self.assertEqual(resp.status, 404)
+        body = self.json_body(raw)
+        self.assertEqual(body["error"], "エラー: ID 999 は存在しません")
+
+    def test_purge_nonexistent_id_returns_404(self):
+        resp, raw = self.request_with_token("DELETE", "/api/todos/999/purge")
+        self.assertEqual(resp.status, 404)
+        body = self.json_body(raw)
+        self.assertEqual(body["error"], "エラー: ID 999 は存在しません")
+
+    def test_restore_item_not_in_trash_returns_404(self):
+        item = self.add(text="牛乳を買う")
+        resp, raw = self.request_with_token(
+            "POST", "/api/todos/{}/restore".format(item["id"])
+        )
+        self.assertEqual(resp.status, 404)
+        body = self.json_body(raw)
+        self.assertIn("ゴミ箱にありません", body["error"])
+
+    def test_purge_item_not_in_trash_returns_404(self):
+        item = self.add(text="牛乳を買う")
+        resp, raw = self.request_with_token(
+            "DELETE", "/api/todos/{}/purge".format(item["id"])
+        )
+        self.assertEqual(resp.status, 404)
+        body = self.json_body(raw)
+        self.assertIn("ゴミ箱にありません", body["error"])
+
+    def test_deleted_items_excluded_from_list(self):
+        kept = self.add(text="牛乳を買う")
+        removed = self.add(text="資料を作る")
+        self.remove(removed["id"])
+
+        resp, raw = self.request("GET", "/api/todos?status=all")
+        items = self.json_body(raw)
+        self.assertEqual([i["id"] for i in items], [kept["id"]])
+
+    def test_restore_invalid_host_rejected_with_403(self):
+        item = self.add(text="牛乳を買う")
+        self.remove(item["id"])
+        resp, raw = self.request(
+            "POST",
+            "/api/todos/{}/restore".format(item["id"]),
+            host="evil.example.com",
+        )
+        self.assertEqual(resp.status, 403)
+
+    def test_purge_invalid_host_rejected_with_403(self):
+        item = self.add(text="牛乳を買う")
+        self.remove(item["id"])
+        resp, raw = self.request(
+            "DELETE",
+            "/api/todos/{}/purge".format(item["id"]),
+            host="evil.example.com",
+        )
+        self.assertEqual(resp.status, 403)
+
+    def test_restore_without_token_rejected_with_403(self):
+        item = self.add(text="牛乳を買う")
+        self.remove(item["id"])
+        resp, raw = self.request("POST", "/api/todos/{}/restore".format(item["id"]))
+        self.assertEqual(resp.status, 403)
+
+    def test_purge_without_token_rejected_with_403(self):
+        item = self.add(text="牛乳を買う")
+        self.remove(item["id"])
+        resp, raw = self.request("DELETE", "/api/todos/{}/purge".format(item["id"]))
+        self.assertEqual(resp.status, 403)
 
 
 class ConcurrencyTest(ServerTestCase):

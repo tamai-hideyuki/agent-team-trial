@@ -702,5 +702,184 @@ class DefaultOverdueGroupingTest(StorageTestCase):
         self.assertEqual([i["id"] for i in items], [1, 2, 3])
 
 
+class TrashTest(StorageTestCase):
+    def setUp(self):
+        super().setUp()
+        self._orig_now = storage.now
+        storage.now = lambda: "2026-09-12T09:00:00+09:00"
+
+    def tearDown(self):
+        storage.now = self._orig_now
+        super().tearDown()
+
+    def test_remove_is_soft_delete_item_remains_in_json_with_deleted_at(self):
+        storage.add("a", storage_dir=self.tmpdir)
+        storage.remove(1, storage_dir=self.tmpdir)
+        data = storage.load(self.tmpdir)
+        self.assertEqual(len(data["items"]), 1)
+        self.assertEqual(data["items"][0]["id"], 1)
+        self.assertEqual(data["items"][0]["deleted_at"], "2026-09-12T09:00:00+09:00")
+
+    def test_restore_clears_deleted_at(self):
+        storage.add("a", storage_dir=self.tmpdir)
+        storage.remove(1, storage_dir=self.tmpdir)
+        item = storage.restore(1, storage_dir=self.tmpdir)
+        self.assertIsNone(item["deleted_at"])
+        data = storage.load(self.tmpdir)
+        self.assertIsNone(data["items"][0]["deleted_at"])
+
+    def test_restore_missing_id_raises_item_not_found_error(self):
+        with self.assertRaises(storage.ItemNotFoundError) as ctx:
+            storage.restore(99, storage_dir=self.tmpdir)
+        self.assertEqual(str(ctx.exception), "エラー: ID 99 は存在しません")
+
+    def test_restore_id_not_in_trash_raises_trash_item_not_found_error(self):
+        storage.add("a", storage_dir=self.tmpdir)
+        with self.assertRaises(storage.TrashItemNotFoundError) as ctx:
+            storage.restore(1, storage_dir=self.tmpdir)
+        self.assertEqual(str(ctx.exception), "エラー: ID 1 はゴミ箱にありません")
+
+    def test_purge_removes_item_physically_and_keeps_next_id(self):
+        storage.add("a", storage_dir=self.tmpdir)
+        storage.add("b", storage_dir=self.tmpdir)
+        storage.remove(1, storage_dir=self.tmpdir)
+        purged = storage.purge(1, storage_dir=self.tmpdir)
+        self.assertEqual(purged["id"], 1)
+        data = storage.load(self.tmpdir)
+        self.assertEqual([i["id"] for i in data["items"]], [2])
+        self.assertEqual(data["next_id"], 3)
+        new_item = storage.add("c", storage_dir=self.tmpdir)
+        self.assertEqual(new_item["id"], 3)
+
+    def test_purge_missing_id_raises_item_not_found_error(self):
+        with self.assertRaises(storage.ItemNotFoundError) as ctx:
+            storage.purge(99, storage_dir=self.tmpdir)
+        self.assertEqual(str(ctx.exception), "エラー: ID 99 は存在しません")
+
+    def test_purge_id_not_in_trash_raises_trash_item_not_found_error(self):
+        storage.add("a", storage_dir=self.tmpdir)
+        with self.assertRaises(storage.TrashItemNotFoundError) as ctx:
+            storage.purge(1, storage_dir=self.tmpdir)
+        self.assertEqual(str(ctx.exception), "エラー: ID 1 はゴミ箱にありません")
+
+    def test_purge_all_removes_all_trashed_items_and_returns_count(self):
+        storage.add("a", storage_dir=self.tmpdir)
+        storage.add("b", storage_dir=self.tmpdir)
+        storage.add("c", storage_dir=self.tmpdir)
+        storage.remove(1, storage_dir=self.tmpdir)
+        storage.remove(2, storage_dir=self.tmpdir)
+        count = storage.purge_all(storage_dir=self.tmpdir)
+        self.assertEqual(count, 2)
+        data = storage.load(self.tmpdir)
+        self.assertEqual([i["id"] for i in data["items"]], [3])
+
+    def test_purge_all_returns_zero_when_trash_is_empty(self):
+        storage.add("a", storage_dir=self.tmpdir)
+        count = storage.purge_all(storage_dir=self.tmpdir)
+        self.assertEqual(count, 0)
+        data = storage.load(self.tmpdir)
+        self.assertEqual(len(data["items"]), 1)
+
+    def test_list_items_excludes_trashed_items_regardless_of_filters(self):
+        storage.add("a", storage_dir=self.tmpdir, tags=["work"])
+        storage.add("secret-b", storage_dir=self.tmpdir, tags=["work"], due="2026-09-01")
+        storage.remove(2, storage_dir=self.tmpdir)
+
+        self.assertEqual(
+            [i["id"] for i in storage.list_items(storage_dir=self.tmpdir, status="all")],
+            [1],
+        )
+        self.assertEqual(
+            [i["id"] for i in storage.list_items(storage_dir=self.tmpdir, tag="work")],
+            [1],
+        )
+        self.assertEqual(
+            [
+                i["id"]
+                for i in storage.list_items(storage_dir=self.tmpdir, search="secret")
+            ],
+            [],
+        )
+        self.assertEqual(
+            [i["id"] for i in storage.list_items(storage_dir=self.tmpdir, sort="due")],
+            [1],
+        )
+
+    def test_done_undone_edit_on_trashed_item_raise_item_not_found_error(self):
+        storage.add("a", storage_dir=self.tmpdir)
+        storage.remove(1, storage_dir=self.tmpdir)
+
+        with self.assertRaises(storage.ItemNotFoundError):
+            storage.done(1, storage_dir=self.tmpdir)
+        with self.assertRaises(storage.ItemNotFoundError):
+            storage.undone(1, storage_dir=self.tmpdir)
+        with self.assertRaises(storage.ItemNotFoundError):
+            storage.edit(1, text="b", storage_dir=self.tmpdir)
+
+    def test_deleted_at_survives_save_load_roundtrip(self):
+        data = {
+            "next_id": 2,
+            "items": [
+                {
+                    "id": 1,
+                    "text": "a",
+                    "done": False,
+                    "created_at": "2026-01-01T00:00:00+09:00",
+                    "completed_at": None,
+                    "due": None,
+                    "priority": None,
+                    "tags": [],
+                    "deleted_at": "2026-01-05T00:00:00+09:00",
+                }
+            ],
+        }
+        storage.save(data, self.tmpdir)
+        loaded = storage.load(self.tmpdir)
+        self.assertEqual(loaded, data)
+
+
+class DelayedPurgeTest(StorageTestCase):
+    def setUp(self):
+        super().setUp()
+        self._orig_now = storage.now
+
+    def tearDown(self):
+        storage.now = self._orig_now
+        super().tearDown()
+
+    def test_item_remains_29_days_after_deletion(self):
+        storage.now = lambda: "2026-01-01T00:00:00+09:00"
+        storage.add("a", storage_dir=self.tmpdir)
+        storage.remove(1, storage_dir=self.tmpdir)
+
+        storage.now = lambda: "2026-01-30T00:00:00+09:00"
+        storage.add("b", storage_dir=self.tmpdir)
+
+        data = storage.load(self.tmpdir)
+        self.assertEqual([i["id"] for i in data["items"]], [1, 2])
+
+    def test_item_is_physically_purged_after_30_days_on_next_write(self):
+        storage.now = lambda: "2026-01-01T00:00:00+09:00"
+        storage.add("a", storage_dir=self.tmpdir)
+        storage.remove(1, storage_dir=self.tmpdir)
+
+        storage.now = lambda: "2026-02-01T00:00:01+09:00"
+        storage.add("b", storage_dir=self.tmpdir)
+
+        data = storage.load(self.tmpdir)
+        self.assertEqual([i["id"] for i in data["items"]], [2])
+
+    def test_delayed_purge_does_not_happen_on_list_items(self):
+        storage.now = lambda: "2026-01-01T00:00:00+09:00"
+        storage.add("a", storage_dir=self.tmpdir)
+        storage.remove(1, storage_dir=self.tmpdir)
+
+        storage.now = lambda: "2026-03-01T00:00:00+09:00"
+        storage.list_items(storage_dir=self.tmpdir, status="all")
+
+        data = storage.load(self.tmpdir)
+        self.assertEqual([i["id"] for i in data["items"]], [1])
+
+
 if __name__ == "__main__":
     unittest.main()

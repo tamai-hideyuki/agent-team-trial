@@ -31,6 +31,8 @@ LOCK_RETRY_ATTEMPTS = 5
 LOCK_RETRY_INTERVAL_SECONDS = 0.1
 
 _TODO_ID_RE = re.compile(r"^/api/todos/(\d+)$")
+_TODO_RESTORE_RE = re.compile(r"^/api/todos/(\d+)/restore$")
+_TODO_PURGE_RE = re.compile(r"^/api/todos/(\d+)/purge$")
 
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -45,7 +47,7 @@ def _item_to_json(item):
     # "overdue" はブラウザ画面(8.1節)の「(期限切れ)」表示のための計算済みフィールド
     # (storage.is_overdue()と同じ判定をクライアント側で再計算させない、5.9節参照)。
     result = dict(item)
-    result["overdue"] = storage.is_overdue(item)
+    result["overdue"] = storage.is_overdue(item) and not item["done"]
     return result
 
 
@@ -124,7 +126,9 @@ class TodoRequestHandler(http.server.BaseHTTPRequestHandler):
         return True
 
     def _handle_storage_error(self, exc):
-        if isinstance(exc, storage.ItemNotFoundError):
+        if isinstance(exc, storage.TrashItemNotFoundError):
+            self._send_error_json(404, str(exc))
+        elif isinstance(exc, storage.ItemNotFoundError):
             self._send_error_json(404, str(exc))
         elif isinstance(exc, storage.LockAcquisitionError):
             self._send_error_json(503, str(exc))
@@ -158,7 +162,15 @@ class TodoRequestHandler(http.server.BaseHTTPRequestHandler):
         if not self._valid_host():
             self._send_error_json(403, "エラー: 不正なリクエストです")
             return
-        if self.path != "/api/todos":
+
+        path = urllib.parse.urlsplit(self.path).path
+
+        restore_match = _TODO_RESTORE_RE.match(path)
+        if restore_match:
+            self._handle_restore(int(restore_match.group(1)))
+            return
+
+        if path != "/api/todos":
             self._send_error_json(404, "エラー: 見つかりません")
             return
         if not self._check_csrf():
@@ -184,6 +196,16 @@ class TodoRequestHandler(http.server.BaseHTTPRequestHandler):
             return
 
         self._send_json(201, _item_to_json(item))
+
+    def _handle_restore(self, item_id):
+        if not self._check_csrf():
+            return
+        try:
+            item = _run_with_write_lock(self.server, storage.restore, item_id)
+        except storage.StorageError as e:
+            self._handle_storage_error(e)
+            return
+        self._send_json(200, _item_to_json(item))
 
     def do_PATCH(self):
         if not self._valid_host():
@@ -248,7 +270,14 @@ class TodoRequestHandler(http.server.BaseHTTPRequestHandler):
             self._send_error_json(403, "エラー: 不正なリクエストです")
             return
 
-        match = _TODO_ID_RE.match(urllib.parse.urlsplit(self.path).path)
+        path = urllib.parse.urlsplit(self.path).path
+
+        purge_match = _TODO_PURGE_RE.match(path)
+        if purge_match:
+            self._handle_purge(int(purge_match.group(1)))
+            return
+
+        match = _TODO_ID_RE.match(path)
         if not match:
             self._send_error_json(404, "エラー: 見つかりません")
             return
@@ -263,6 +292,16 @@ class TodoRequestHandler(http.server.BaseHTTPRequestHandler):
             self._handle_storage_error(e)
             return
 
+        self._send_json(200, _item_to_json(item))
+
+    def _handle_purge(self, item_id):
+        if not self._check_csrf():
+            return
+        try:
+            item = _run_with_write_lock(self.server, storage.purge, item_id)
+        except storage.StorageError as e:
+            self._handle_storage_error(e)
+            return
         self._send_json(200, _item_to_json(item))
 
     # --- 一覧取得・静的ファイル配信 ---------------------------------------

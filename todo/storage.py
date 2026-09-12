@@ -11,7 +11,7 @@ import os
 import re
 import time
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 DATA_FILENAME = "todo.json"
 TMP_FILENAME = "todo.json.tmp"
@@ -41,6 +41,14 @@ class ItemNotFoundError(StorageError):
     def __init__(self, item_id):
         self.item_id = item_id
         super().__init__("エラー: ID {} は存在しません".format(item_id))
+
+
+class TrashItemNotFoundError(StorageError):
+    """指定されたIDのTODOは存在するがゴミ箱に入っていない場合に送出する。"""
+
+    def __init__(self, item_id):
+        self.item_id = item_id
+        super().__init__("エラー: ID {} はゴミ箱にありません".format(item_id))
 
 
 class InvalidTextError(StorageError):
@@ -308,6 +316,28 @@ def save(data, storage_dir=None):
     os.replace(paths["tmp"], paths["data"])
 
 
+def _purge_expired(data):
+    """ゴミ箱内で30日を超えた項目を data["items"] から物理的に除去する(5.17節)。
+
+    除去した場合は True、何も除去しなかった場合は False を返す。
+    比較には必ず now()(モジュール関数、モックパッチ対象)を使う。
+    """
+    cutoff = datetime.fromisoformat(now())
+    remaining = []
+    changed = False
+    for item in data["items"]:
+        deleted_at = item.get("deleted_at")
+        if deleted_at is not None:
+            deleted_dt = datetime.fromisoformat(deleted_at)
+            if cutoff - deleted_dt > timedelta(days=30):
+                changed = True
+                continue
+        remaining.append(item)
+    if changed:
+        data["items"] = remaining
+    return changed
+
+
 def _next_item_id(data):
     max_existing = max((item["id"] for item in data["items"]), default=0)
     return max(data.get("next_id", 1), max_existing + 1)
@@ -433,6 +463,8 @@ def add(text, storage_dir=None, due=None, priority=None, tags=None):
 
     with LockGuard(storage_dir):
         data = load(storage_dir)
+        if _purge_expired(data):
+            save(data, storage_dir)
         new_id = _next_item_id(data)
         item = {
             "id": new_id,
@@ -443,6 +475,7 @@ def add(text, storage_dir=None, due=None, priority=None, tags=None):
             "due": due,
             "priority": priority,
             "tags": tags,
+            "deleted_at": None,
         }
         data["items"].append(item)
         data["next_id"] = new_id + 1
@@ -469,6 +502,7 @@ def list_items(include_done=True, storage_dir=None, sort=None, search=None,
         storage_dir = get_storage_dir()
     data = load(storage_dir)
     items = sorted(data["items"], key=lambda item: item["id"])
+    items = [item for item in items if item.get("deleted_at") is None]
 
     if status == "pending":
         items = [item for item in items if not item["done"]]
@@ -527,9 +561,16 @@ def _apply_overdue_grouping(items):
     return overdue + rest
 
 
-def _find_item(data, item_id):
+def _find_item(data, item_id, include_deleted=False):
+    """id が一致する item を返す(見つからなければ None)。
+
+    include_deleted=False(既定)では deleted_at が None でない項目
+    (ゴミ箱内)は「見つからない」扱いとする(5.17節)。
+    """
     for item in data["items"]:
         if item["id"] == item_id:
+            if not include_deleted and item.get("deleted_at") is not None:
+                return None
             return item
     return None
 
@@ -545,6 +586,8 @@ def done(item_id, storage_dir=None):
 
     with LockGuard(storage_dir):
         data = load(storage_dir)
+        if _purge_expired(data):
+            save(data, storage_dir)
         target = _find_item(data, item_id)
         if target is None:
             raise ItemNotFoundError(item_id)
@@ -567,6 +610,8 @@ def undone(item_id, storage_dir=None):
 
     with LockGuard(storage_dir):
         data = load(storage_dir)
+        if _purge_expired(data):
+            save(data, storage_dir)
         target = _find_item(data, item_id)
         if target is None:
             raise ItemNotFoundError(item_id)
@@ -620,6 +665,8 @@ def edit(item_id, text=None, due=None, clear_due=False, priority=None,
 
     with LockGuard(storage_dir):
         data = load(storage_dir)
+        if _purge_expired(data):
+            save(data, storage_dir)
         target = _find_item(data, item_id)
         if target is None:
             raise ItemNotFoundError(item_id)
@@ -645,21 +692,103 @@ def edit(item_id, text=None, due=None, clear_due=False, priority=None,
 
 
 def remove(item_id, storage_dir=None):
-    """指定IDのTODOを削除する。
+    """指定IDのTODOをゴミ箱に移動する(ソフトデリート、5.17節)。
 
-    返り値: 削除された item(dict)。
-    例外: ItemNotFoundError(該当IDが存在しない場合)。
+    配列からは除去せず、deleted_at に現在時刻をセットする。
+    返り値: 更新後の item(dict)。
+    例外: ItemNotFoundError(該当IDが存在しない、またはゴミ箱内の場合)。
     """
     if storage_dir is None:
         storage_dir = get_storage_dir()
 
     with LockGuard(storage_dir):
         data = load(storage_dir)
+        if _purge_expired(data):
+            save(data, storage_dir)
         target = _find_item(data, item_id)
         if target is None:
             raise ItemNotFoundError(item_id)
+
+        target["deleted_at"] = now()
+        save(data, storage_dir)
+
+    return target
+
+
+def restore(item_id, storage_dir=None):
+    """ゴミ箱内のTODOを復元する(deleted_at を None に戻す、5.17節)。
+
+    返り値: 更新後の item(dict)。
+    例外:
+        ItemNotFoundError(該当IDがそもそも存在しない場合)。
+        TrashItemNotFoundError(IDは存在するがゴミ箱に入っていない場合)。
+    """
+    if storage_dir is None:
+        storage_dir = get_storage_dir()
+
+    with LockGuard(storage_dir):
+        data = load(storage_dir)
+        if _purge_expired(data):
+            save(data, storage_dir)
+        target = _find_item(data, item_id, include_deleted=True)
+        if target is None:
+            raise ItemNotFoundError(item_id)
+        if target.get("deleted_at") is None:
+            raise TrashItemNotFoundError(item_id)
+
+        target["deleted_at"] = None
+        save(data, storage_dir)
+
+    return target
+
+
+def purge(item_id, storage_dir=None):
+    """ゴミ箱内のTODOを完全に削除する(配列から物理的に除去する、5.17節)。
+
+    next_id は変更しない。
+    返り値: 削除前の item(dict)。
+    例外:
+        ItemNotFoundError(該当IDがそもそも存在しない場合)。
+        TrashItemNotFoundError(IDは存在するがゴミ箱に入っていない場合)。
+    """
+    if storage_dir is None:
+        storage_dir = get_storage_dir()
+
+    with LockGuard(storage_dir):
+        data = load(storage_dir)
+        if _purge_expired(data):
+            save(data, storage_dir)
+        target = _find_item(data, item_id, include_deleted=True)
+        if target is None:
+            raise ItemNotFoundError(item_id)
+        if target.get("deleted_at") is None:
+            raise TrashItemNotFoundError(item_id)
 
         data["items"] = [item for item in data["items"] if item["id"] != item_id]
         save(data, storage_dir)
 
     return target
+
+
+def purge_all(storage_dir=None):
+    """ゴミ箱内の全TODOを完全に削除する(5.17節)。
+
+    返り値: 除去した件数(int)。ゴミ箱が空の場合は0を返す。
+    """
+    if storage_dir is None:
+        storage_dir = get_storage_dir()
+
+    with LockGuard(storage_dir):
+        data = load(storage_dir)
+        _purge_expired(data)
+        trashed_ids = {
+            item["id"] for item in data["items"] if item.get("deleted_at") is not None
+        }
+        count = len(trashed_ids)
+        if count:
+            data["items"] = [
+                item for item in data["items"] if item["id"] not in trashed_ids
+            ]
+        save(data, storage_dir)
+
+    return count

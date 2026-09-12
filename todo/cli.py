@@ -52,6 +52,14 @@ def _format_item(item, show_completed_at):
     return line
 
 
+def _format_tags_only(item):
+    """タグ部分のみを5.8節の括弧書式で返す(タグが無ければ空文字)。DESIGN.md 5.10節。"""
+    tags = item.get("tags")
+    if not tags:
+        return ""
+    return " (タグ: {})".format(", ".join(tags))
+
+
 def _cmd_add(args):
     item = storage.add(args.text, due=args.due, priority=args.priority, tags=args.tag)
     message = "追加しました: #{} {}".format(item["id"], item["text"])
@@ -72,6 +80,8 @@ def _cmd_list(args):
     )
     if not items:
         print("TODOはありません")
+        if not storage.load()["items"]:
+            print('todo add "内容" で追加できます')
         return
     for item in items:
         print(_format_item(item, show_completed_at=show_all))
@@ -103,7 +113,24 @@ def _cmd_edit(args):
         tags=args.tag,
         clear_tags=args.clear_tags,
     )
-    print("編集しました: #{} {}".format(item["id"], item["text"]))
+    message = "編集しました: #{} {}".format(item["id"], item["text"])
+    if args.tag or args.clear_tags:
+        message += _format_tags_only(item)
+    print(message)
+
+
+def _cmd_restore(args):
+    item = storage.restore(args.id)
+    print("復元しました: #{} {}".format(item["id"], item["text"]))
+
+
+def _cmd_purge(args):
+    if args.all:
+        count = storage.purge_all()
+        print("ゴミ箱を空にしました({}件)".format(count))
+    else:
+        item = storage.purge(args.id)
+        print("完全に削除しました: #{} {}".format(item["id"], item["text"]))
 
 
 def _cmd_serve(args):
@@ -155,6 +182,16 @@ def _build_parser():
     edit_parser.add_argument("--tag", action="append", default=None)
     edit_parser.add_argument("--clear-tags", action="store_true")
     edit_parser.set_defaults(func=_cmd_edit)
+
+    restore_parser = subparsers.add_parser("restore", help="ゴミ箱に入っているTODOを復元する")
+    restore_parser.add_argument("id", type=int)
+    restore_parser.set_defaults(func=_cmd_restore)
+
+    purge_parser = subparsers.add_parser("purge", help="ゴミ箱に入っているTODOを完全に削除する")
+    purge_group = purge_parser.add_mutually_exclusive_group(required=True)
+    purge_group.add_argument("id", type=int, nargs="?", default=None)
+    purge_group.add_argument("--all", action="store_true")
+    purge_parser.set_defaults(func=_cmd_purge)
 
     serve_parser = subparsers.add_parser("serve", help="ブラウザから操作できるローカルサーバを起動する")
     serve_parser.add_argument("--port", type=int, default=DEFAULT_SERVE_PORT)

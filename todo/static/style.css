@@ -50,3 +50,31 @@ h1 {
   padding: 0.3rem 0.6rem;
   cursor: pointer;
 }
+
+.todo-table tr.is-overdue {
+  background: #fdecea;
+  color: #7a1f16;
+}
+
+.priority-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.priority-badge.priority-high {
+  background: #7a1f16;
+  color: #ffffff;
+}
+
+.priority-badge.priority-medium {
+  background: #fde3b8;
+  color: #7a4a00;
+}
+
+.priority-badge.priority-low {
+  background: #eeeeee;
+  color: #555555;
+}

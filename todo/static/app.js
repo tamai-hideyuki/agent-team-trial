@@ -93,6 +93,9 @@
 
   function renderRow(item) {
     var tr = document.createElement("tr");
+    if (item.overdue && !item.done) {
+      tr.classList.add("is-overdue");
+    }
 
     var doneTd = document.createElement("td");
     var checkbox = document.createElement("input");
@@ -125,7 +128,12 @@
     tr.appendChild(dueTd);
 
     var priorityTd = document.createElement("td");
-    priorityTd.textContent = item.priority || "";
+    if (item.priority) {
+      var priorityBadge = document.createElement("span");
+      priorityBadge.className = "priority-badge priority-" + item.priority;
+      priorityBadge.textContent = item.priority;
+      priorityTd.appendChild(priorityBadge);
+    }
     tr.appendChild(priorityTd);
 
     var tagsTd = document.createElement("td");
